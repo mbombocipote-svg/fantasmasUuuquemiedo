@@ -177,16 +177,16 @@
   /* ========================
      CONFIGURACIÓN
      ======================== */
-  const CONFIG = {
-    ghostMinInterval: 25000,
-    ghostMaxInterval: 45000,
-    ghostVisibleMin: 6000,
-    ghostVisibleMax: 12000,
-    ghostScaleMin: 0.4,
-    ghostScaleMax: 1.1,
-    fovHorizontal: 60,
-    fovVertical: 90,
-  };
+const CONFIG = {
+  ghostMinInterval: 5000,    // antes: 25000  → ahora: 5 segundos mínimo
+  ghostMaxInterval: 12000,   // antes: 45000  → ahora: 12 segundos máximo
+  ghostVisibleMin: 8000,     // antes: 6000   → ahora: 8 segundos visibles
+  ghostVisibleMax: 15000,    // antes: 12000  → ahora: 15 segundos visibles
+  ghostScaleMin: 0.4,
+  ghostScaleMax: 1.1,
+  fovHorizontal: 60,
+  fovVertical: 90,
+};
 
   /* ========================
      IMÁGENES DE FANTASMAS
