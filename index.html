@@ -17,14 +17,12 @@
       background: #000; overflow: hidden;
     }
 
-    /* Cámara trasera */
     #video {
       position: absolute; top: 0; left: 0;
       width: 100%; height: 100%;
       object-fit: cover; z-index: 1;
     }
 
-    /* ===== EFECTOS VHS ===== */
     .scanlines {
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
       background: linear-gradient(to bottom, rgba(255,255,255,0) 50%, rgba(0,0,0,0.3) 50%);
@@ -71,7 +69,6 @@
       text-shadow: 1px 1px 0 rgba(255,0,0,0.4), -1px -1px 0 rgba(0,255,255,0.4);
     }
 
-    /* ===== FANTASMAS AR ===== */
     .ghost {
       position: absolute;
       z-index: 5;
@@ -87,7 +84,6 @@
       opacity: 0.85;
     }
 
-    /* ===== UI ===== */
     #startOverlay {
       position: absolute; inset: 0;
       background: rgba(0,0,0,0.92);
@@ -112,7 +108,6 @@
     .btn:disabled { opacity: 0.5; cursor: not-allowed; animation: none; }
     #status { color: #0f0; font-size: 11px; margin-top: 10px; }
 
-    /* ===== ANIMACIONES ===== */
     @keyframes scanlines {
       0% { background-position: 0 0; }
       100% { background-position: 0 3px; }
@@ -149,7 +144,6 @@
 <div id="container">
   <video id="video" autoplay playsinline muted></video>
 
-  <!-- VHS FX -->
   <div class="scanlines"></div>
   <div class="noise"></div>
   <div class="chromatic"></div>
@@ -161,10 +155,8 @@
   <div class="rec">REC</div>
   <div class="timestamp" id="timestamp">1997-10-13 00:00:00</div>
 
-  <!-- Capa de fantasmas -->
   <div id="ghostLayer" style="position:absolute;inset:0;z-index:5;pointer-events:none;overflow:hidden"></div>
 
-  <!-- Overlay de inicio -->
   <div id="startOverlay">
     <h1>📹 VHS GHOST CAM</h1>
     <p>Apunta con la cámara trasera. Los fantasmas aparecen en el mundo real. Si giras el móvil, se quedan donde los dejaste.</p>
@@ -174,23 +166,19 @@
 </div>
 
 <script>
-  /* ========================
-     CONFIGURACIÓN
-     ======================== */
-const CONFIG = {
-  ghostMinInterval: 5000,    // antes: 25000  → ahora: 5 segundos mínimo
-  ghostMaxInterval: 12000,   // antes: 45000  → ahora: 12 segundos máximo
-  ghostVisibleMin: 8000,     // antes: 6000   → ahora: 8 segundos visibles
-  ghostVisibleMax: 15000,    // antes: 12000  → ahora: 15 segundos visibles
-  ghostScaleMin: 0.4,
-  ghostScaleMax: 1.1,
-  fovHorizontal: 60,
-  fovVertical: 90,
-};
+  const CONFIG = {
+    ghostMinInterval: 5000,
+    ghostMaxInterval: 12000,
+    ghostVisibleMin: 8000,
+    ghostVisibleMax: 15000,
+    ghostScaleMin: 0.4,
+    ghostScaleMax: 1.1,
+    fovHorizontal: 45,   // REDUCIDO: antes 60, ahora 45 (menos sensible)
+    fovVertical: 60,     // REDUCIDO: antes 90, ahora 60
+    smoothFactor: 0.15,  // NUEVO: 0.1 = muy suave, 0.3 = más reactivo
+    maxJump: 12,        // NUEVO: si la brújula salta más de 12°, lo ignoramos
+  };
 
-  /* ========================
-     IMÁGENES DE FANTASMAS
-     ======================== */
   const GHOST_IMAGES = [
     'fantasma.png',
     'fantasma1.png',
@@ -203,9 +191,6 @@ const CONFIG = {
     return GHOST_IMAGES[Math.floor(Math.random() * GHOST_IMAGES.length)];
   }
 
-  /* ========================
-     ELEMENTOS
-     ======================== */
   const video = document.getElementById('video');
   const startBtn = document.getElementById('startBtn');
   const startOverlay = document.getElementById('startOverlay');
@@ -215,18 +200,15 @@ const CONFIG = {
   let stream = null;
   let isRunning = false;
 
-  // Orientación
-  let currentAlpha = 0;
-  let currentBeta = 0;
-  let currentGamma = 0;
+  /* ===== ORIENTACIÓN SUAVIZADA ===== */
+  // Valores RAW del sensor (brutos)
+  let rawAlpha = 0, rawBeta = 0, rawGamma = 0;
+  // Valores SUAVIZADOS (filtrados) que realmente usamos
+  let smoothAlpha = 0, smoothBeta = 0, smoothGamma = 0;
 
-  // Fantasmas activos
   const activeGhosts = [];
   let ghostIdCounter = 0;
 
-  /* ========================
-     PERMISOS Y CÁMARA
-     ======================== */
   async function requestOrientationPermission() {
     if (typeof DeviceOrientationEvent !== 'undefined' && 
         typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -252,7 +234,6 @@ const CONFIG = {
       return;
     }
 
-    // Cámara trasera
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { exact: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
@@ -285,22 +266,59 @@ const CONFIG = {
     startVHSGlitchLoop();
     startGhostSpawner();
     startGhostRenderLoop();
+    startSmoothingLoop(); // NUEVO: bucle de suavizado
   });
 
+  /* ===== SENSORES: captura bruta ===== */
   function onOrientation(e) {
-    currentAlpha = e.alpha || 0;
-    currentBeta = e.beta || 0;
-    currentGamma = e.gamma || 0;
+    // Guardamos los valores brutos, pero NO los usamos directamente
+    rawAlpha = e.alpha || 0;
+    rawBeta = e.beta || 0;
+    rawGamma = e.gamma || 0;
   }
 
-  /* ========================
-     SISTEMA AR DE FANTASMAS
-     ======================== */
+  /* ===== SENSORES: suavizado ===== */
+  function startSmoothingLoop() {
+    function smooth() {
+      if (!isRunning) return;
+
+      // Calcular diferencia en alpha (circular)
+      let alphaDiff = rawAlpha - smoothAlpha;
+      while (alphaDiff > 180) alphaDiff -= 360;
+      while (alphaDiff < -180) alphaDiff += 360;
+
+      // FILTRO ANTI-SALTO: si la brújula salta demasiado de golpe, ignoramos gran parte
+      if (Math.abs(alphaDiff) > CONFIG.maxJump) {
+        alphaDiff = alphaDiff * 0.1; // amortiguamos el 90% del salto brusco
+      }
+
+      // Lerp suave
+      smoothAlpha += alphaDiff * CONFIG.smoothFactor;
+      // Normalizar a 0-360
+      while (smoothAlpha >= 360) smoothAlpha -= 360;
+      while (smoothAlpha < 0) smoothAlpha += 360;
+
+      // Beta y gamma (no son circulares, solo clamp)
+      let betaDiff = rawBeta - smoothBeta;
+      if (Math.abs(betaDiff) > CONFIG.maxJump) betaDiff *= 0.1;
+      smoothBeta += betaDiff * CONFIG.smoothFactor;
+
+      let gammaDiff = rawGamma - smoothGamma;
+      if (Math.abs(gammaDiff) > CONFIG.maxJump) gammaDiff *= 0.1;
+      smoothGamma += gammaDiff * CONFIG.smoothFactor;
+
+      requestAnimationFrame(smooth);
+    }
+    requestAnimationFrame(smooth);
+  }
+
+  /* ===== FANTASMAS ===== */
   function spawnGhost() {
     if (!isRunning) return;
 
-    const worldAlpha = (currentAlpha + (Math.random() * 120 - 60)) % 360;
-    const worldBeta = Math.max(-40, Math.min(40, currentBeta + (Math.random() * 40 - 20)));
+    // Usamos los valores SUAVIZADOS para spawnear
+    const worldAlpha = (smoothAlpha + (Math.random() * 120 - 60)) % 360;
+    const worldBeta = Math.max(-40, Math.min(40, smoothBeta + (Math.random() * 40 - 20)));
 
     const id = ++ghostIdCounter;
     const ghostEl = document.createElement('div');
@@ -308,8 +326,8 @@ const CONFIG = {
     ghostEl.id = 'ghost-' + id;
 
     const img = document.createElement('img');
-    img.src = getRandomGhostImage(); // <-- ALEATORIO AQUÍ
-    img.onerror = () => { ghostEl.style.display = 'none'; }; // Si no existe la imagen, ocultar
+    img.src = getRandomGhostImage();
+    img.onerror = () => { ghostEl.style.display = 'none'; };
     ghostEl.appendChild(img);
     ghostLayer.appendChild(ghostEl);
 
@@ -346,9 +364,10 @@ const CONFIG = {
         }
       }, delay);
     }
-    setTimeout(next, 5000);
+    setTimeout(next, 2000);
   }
 
+  /* ===== RENDER: usa valores SUAVIZADOS ===== */
   function startGhostRenderLoop() {
     function render() {
       if (!isRunning) return;
@@ -357,15 +376,19 @@ const CONFIG = {
       const w = window.innerWidth;
       const h = window.innerHeight;
 
+      // Usamos SMOOTH en lugar de RAW
+      const camAlpha = smoothAlpha;
+      const camBeta = smoothBeta;
+
       for (let i = activeGhosts.length - 1; i >= 0; i--) {
         const g = activeGhosts[i];
         const elapsed = now - g.spawnTime;
 
-        let deltaAlpha = g.worldAlpha - currentAlpha;
+        let deltaAlpha = g.worldAlpha - camAlpha;
         while (deltaAlpha > 180) deltaAlpha -= 360;
         while (deltaAlpha < -180) deltaAlpha += 360;
 
-        let deltaBeta = g.worldBeta - currentBeta;
+        let deltaBeta = g.worldBeta - camBeta;
 
         const inFovH = Math.abs(deltaAlpha) < CONFIG.fovHorizontal / 2;
         const inFovV = Math.abs(deltaBeta) < CONFIG.fovVertical / 2;
@@ -422,9 +445,6 @@ const CONFIG = {
     requestAnimationFrame(render);
   }
 
-  /* ========================
-     LOOPS AUXILIARES
-     ======================== */
   function startTimestampLoop() {
     setInterval(() => {
       const now = new Date();
