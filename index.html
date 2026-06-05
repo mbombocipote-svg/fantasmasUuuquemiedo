@@ -159,7 +159,7 @@
 
   <div id="startOverlay">
     <h1>📹 VHS GHOST CAM</h1>
-    <p>Apunta con la cámara trasera. Los fantasmas aparecen en el mundo real. Si giras el móvil, se quedan donde los dejaste.</p>
+    <p>Apunta con la cámara trasera. Los fantasmas caminan por el suelo. Si giras el móvil, se quedan donde los dejaste.</p>
     <button class="btn" id="startBtn">INICIAR EXPERIENCIA</button>
     <div id="status"></div>
   </div>
@@ -173,10 +173,12 @@
     ghostVisibleMax: 15000,
     ghostScaleMin: 0.4,
     ghostScaleMax: 1.1,
-    fovHorizontal: 45,   // REDUCIDO: antes 60, ahora 45 (menos sensible)
-    fovVertical: 60,     // REDUCIDO: antes 90, ahora 60
-    smoothFactor: 0.15,  // NUEVO: 0.1 = muy suave, 0.3 = más reactivo
-    maxJump: 12,        // NUEVO: si la brújula salta más de 12°, lo ignoramos
+    fovHorizontal: 45,
+    fovVertical: 55,      // REDUCIDO para que el suelo ocupe la parte inferior de forma natural
+    smoothFactor: 0.12,
+    maxJump: 10,
+    groundOffsetMin: 18,  // Grados por debajo del horizonte (mínimo)
+    groundOffsetMax: 40,  // Grados por debajo del horizonte (máximo)
   };
 
   const GHOST_IMAGES = [
@@ -200,11 +202,10 @@
   let stream = null;
   let isRunning = false;
 
-  /* ===== ORIENTACIÓN SUAVIZADA ===== */
-  // Valores RAW del sensor (brutos)
-  let rawAlpha = 0, rawBeta = 0, rawGamma = 0;
-  // Valores SUAVIZADOS (filtrados) que realmente usamos
-  let smoothAlpha = 0, smoothBeta = 0, smoothGamma = 0;
+  // Sensores RAW
+  let rawAlpha = 0, rawBeta = 0;
+  // Sensores SUAVIZADOS
+  let smoothAlpha = 0, smoothBeta = 0;
 
   const activeGhosts = [];
   let ghostIdCounter = 0;
@@ -215,9 +216,7 @@
       try {
         const response = await DeviceOrientationEvent.requestPermission();
         return response === 'granted';
-      } catch (e) {
-        return false;
-      }
+      } catch (e) { return false; }
     }
     return true;
   }
@@ -266,59 +265,57 @@
     startVHSGlitchLoop();
     startGhostSpawner();
     startGhostRenderLoop();
-    startSmoothingLoop(); // NUEVO: bucle de suavizado
+    startSmoothingLoop();
   });
 
-  /* ===== SENSORES: captura bruta ===== */
   function onOrientation(e) {
-    // Guardamos los valores brutos, pero NO los usamos directamente
     rawAlpha = e.alpha || 0;
     rawBeta = e.beta || 0;
-    rawGamma = e.gamma || 0;
   }
 
-  /* ===== SENSORES: suavizado ===== */
+  // ===== SUAVIZADO CON ANTI-SALTO =====
   function startSmoothingLoop() {
     function smooth() {
       if (!isRunning) return;
 
-      // Calcular diferencia en alpha (circular)
+      // ALPHA (horizontal) - circular
       let alphaDiff = rawAlpha - smoothAlpha;
       while (alphaDiff > 180) alphaDiff -= 360;
       while (alphaDiff < -180) alphaDiff += 360;
 
-      // FILTRO ANTI-SALTO: si la brújula salta demasiado de golpe, ignoramos gran parte
-      if (Math.abs(alphaDiff) > CONFIG.maxJump) {
-        alphaDiff = alphaDiff * 0.1; // amortiguamos el 90% del salto brusco
-      }
+      if (Math.abs(alphaDiff) > CONFIG.maxJump) alphaDiff *= 0.1;
 
-      // Lerp suave
       smoothAlpha += alphaDiff * CONFIG.smoothFactor;
-      // Normalizar a 0-360
       while (smoothAlpha >= 360) smoothAlpha -= 360;
       while (smoothAlpha < 0) smoothAlpha += 360;
 
-      // Beta y gamma (no son circulares, solo clamp)
+      // BETA (vertical) - no circular, clamped
       let betaDiff = rawBeta - smoothBeta;
       if (Math.abs(betaDiff) > CONFIG.maxJump) betaDiff *= 0.1;
       smoothBeta += betaDiff * CONFIG.smoothFactor;
-
-      let gammaDiff = rawGamma - smoothGamma;
-      if (Math.abs(gammaDiff) > CONFIG.maxJump) gammaDiff *= 0.1;
-      smoothGamma += gammaDiff * CONFIG.smoothFactor;
+      // Clamp beta a rangos realistas para no volverse loco
+      smoothBeta = Math.max(-60, Math.min(80, smoothBeta));
 
       requestAnimationFrame(smooth);
     }
     requestAnimationFrame(smooth);
   }
 
-  /* ===== FANTASMAS ===== */
+  // ===== SPAWN EN EL SUELO =====
   function spawnGhost() {
     if (!isRunning) return;
 
-    // Usamos los valores SUAVIZADOS para spawnear
-    const worldAlpha = (smoothAlpha + (Math.random() * 120 - 60)) % 360;
-    const worldBeta = Math.max(-40, Math.min(40, smoothBeta + (Math.random() * 40 - 20)));
+    // Horizontal: aleatorio alrededor de donde miras
+    const worldAlpha = (smoothAlpha + (Math.random() * 100 - 50)) % 360;
+    if (worldAlpha < 0) worldAlpha += 360;
+
+    // Vertical: SIEMPRE por debajo del horizonte (suelo)
+    // Si miras hacia arriba (beta negativo), el suelo está más abajo
+    // Si miras hacia abajo (beta positivo), el suelo está un poco más abajo
+    const groundOffset = CONFIG.groundOffsetMin + Math.random() * (CONFIG.groundOffsetMax - CONFIG.groundOffsetMin);
+    let worldBeta = smoothBeta + groundOffset;
+    // Clamp para que no se vaya fuera del rango del sensor ni demasiado lejos
+    worldBeta = Math.min(75, Math.max(-20, worldBeta));
 
     const id = ++ghostIdCounter;
     const ghostEl = document.createElement('div');
@@ -367,7 +364,7 @@
     setTimeout(next, 2000);
   }
 
-  /* ===== RENDER: usa valores SUAVIZADOS ===== */
+  // ===== RENDER CON EJES CORREGIDOS =====
   function startGhostRenderLoop() {
     function render() {
       if (!isRunning) return;
@@ -376,7 +373,6 @@
       const w = window.innerWidth;
       const h = window.innerHeight;
 
-      // Usamos SMOOTH en lugar de RAW
       const camAlpha = smoothAlpha;
       const camBeta = smoothBeta;
 
@@ -384,34 +380,45 @@
         const g = activeGhosts[i];
         const elapsed = now - g.spawnTime;
 
+        // --- HORIZONTAL (alpha) ---
+        // INVERTIDO: al girar a la derecha, el fantasma se va a la izquierda
         let deltaAlpha = g.worldAlpha - camAlpha;
         while (deltaAlpha > 180) deltaAlpha -= 360;
         while (deltaAlpha < -180) deltaAlpha += 360;
 
-        let deltaBeta = g.worldBeta - camBeta;
+        // EJE X INVERTIDO: signo negativo explícito
+        const x = 0.5 - (deltaAlpha / (CONFIG.fovHorizontal / 2)) * 0.5;
 
-        const inFovH = Math.abs(deltaAlpha) < CONFIG.fovHorizontal / 2;
-        const inFovV = Math.abs(deltaBeta) < CONFIG.fovVertical / 2;
+        // --- VERTICAL (beta) ---
+        let deltaBeta = g.worldBeta - camBeta;
+        // Normal (no invertido): si miras arriba (beta bajo), el suelo está más abajo en pantalla
+        const y = 0.5 + (deltaBeta / (CONFIG.fovVertical / 2)) * 0.5;
+
+        // Visibilidad
+        const inFovH = x >= -0.2 && x <= 1.2; // margen para no cortar bruscamente
+        const inFovV = y >= -0.2 && y <= 1.2;
 
         if (!inFovH || !inFovV) {
           g.el.style.opacity = '0';
         } else {
-          const x = 0.5 + (deltaAlpha / (CONFIG.fovHorizontal / 2)) * 0.5;
-          const y = 0.5 + (deltaBeta / (CONFIG.fovVertical / 2)) * 0.5;
+          // Posicionar
+          const px = x * w;
+          const py = y * h;
 
+          // Efecto acercarse
           g.approachProgress = Math.min(1, elapsed / g.visibleDuration);
           const ease = g.approachProgress * g.approachProgress;
           const scale = CONFIG.ghostScaleMin + ease * (CONFIG.ghostScaleMax - CONFIG.ghostScaleMin);
 
-          const px = x * w;
-          const py = y * h;
           const size = g.baseSize * scale;
 
+          // Centrar horizontalmente, anclar pies en la posición Y
           g.el.style.left = (px - size/2) + 'px';
-          g.el.style.top = (py - size) + 'px';
+          g.el.style.top = (py - size) + 'px'; // pies en el punto (x,y)
           g.el.style.width = size + 'px';
           g.el.style.height = (size * 1.2) + 'px';
 
+          // Opacidad
           let opacity = 0;
           if (g.state === 'appearing') {
             opacity = Math.min(1, elapsed / 1000) * g.maxOpacity;
@@ -427,6 +434,7 @@
 
           g.el.style.opacity = opacity.toFixed(2);
 
+          // Glitch ocasional
           if (Math.random() > 0.96) {
             g.el.style.filter = `brightness(1.4) contrast(1.3) drop-shadow(0 0 20px rgba(255,255,255,0.9))`;
           } else {
